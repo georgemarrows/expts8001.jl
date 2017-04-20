@@ -1,42 +1,53 @@
 module Expt8001
 
+    # Return an empty matrix of the same type as `A`, with element `eltype`
+    # and of size `sz`
     empty(A::Diagonal, eltype::Type, sz) = Diagonal(Vector{Float64}(sz[1]))
     empty(A::Bidiagonal, eltype::Type, sz) = Bidiagonal(Vector{Float64}(sz[1]), Vector{Float64}(sz[1]-1), true)
 
+    # Return an empty matrix which is the tightest type possible to hold
+    # the result of performing * on `A` and `B`
     compat(*, A::Diagonal, B::Diagonal) = empty(A, Float64, (size(A,1), size(B,2)) )
     compat(*, A::Diagonal, B::AbstractMatrix) = empty(B, Float64, (size(A,1), size(B,2)) )
     compat(*, A::AbstractMatrix, B::Diagonal) = empty(A, Float64, (size(A,1), size(B,2)) )
-    compat(*, A::Bidiagonal, B::Bidiagonal) = UpperTriangular(Array{Float64}(size(A,1), size(A,1)))
+    compat(*, A::Bidiagonal, B::Bidiagonal) = UpperTriangular(zeros(Float64, (size(A,1), size(A,1))))
 
-    dot(A::Diagonal,  i, B::AbstractMatrix, j) = A.diag[i] * B[i, j]
-    function dot(A::Bidiagonal, i, B::AbstractMatrix, j)
-        if i == size(A, 2)
+    # Indexing
+    struct Index
+        i::Int64
+        j::Int64
+    end
+
+    # FIXME this returns some indices more than once
+    banded(n::Int64, m::Int64, above::Int64, below::Int64) =
+      ( Index(i, clamp(i+j, 1, m))  for i in 1:n, j in -above:below )
+
+    indexes(B::Bidiagonal) = banded(size(B,1), size(B,2), 0, 1)
+
+    indexes(*, A::Diagonal, B::Diagonal) = (Index(i,i) for i in 1:length(A.diag))
+    indexes(*, A::Diagonal, B::AbstractMatrix) = indexes(B)
+    indexes(*, A::AbstractMatrix, B::Diagonal) = indexes(A)
+    indexes(*, A::Bidiagonal, B::Bidiagonal) = banded(size(A,1), size(B,2), 0, 2)
+
+    # Dot product of the `i`th row of `A` with the `j`th column of `B`
+    dot(A::Diagonal,  i::Int64, B::AbstractMatrix, j::Int64) = @inbounds return A.diag[i] * B[i, j]
+    function dot(A::Bidiagonal, i::Int64, B::AbstractMatrix, j::Int64)
+        @inbounds if i == size(A, 2)
             return A.dv[i] * B[i, j]
         else
             return A.dv[i] * B[i, j]  + A.ev[i] * B[i+1, j]
         end
     end
 
-    indexes(D::Diagonal) = ((i,i) for i in 1:length(D.diag))
-    function indexes(B::Bidiagonal)
-        n = size(B, 1)
-        m = n + 1
-        ((mod(i,m) + div(i,m), mod(i,m) + 2div(i,m)) for i in 1:(2n-1))
-    end
-    function indexes(U::UpperTriangular)
-        n = size(U, 1)
-        ( (i,j)  for i in 1:n, j in 1:n if i<=j )
-    end
-
 
     function A_mul_B(A::AbstractMatrix, B::AbstractMatrix)
         T = compat(*, A, B)
 
-        for (i, j) in indexes(T)
-            T[i,j] = dot(A, i, B, j)
+        for ndx in indexes(*, A, B)
+            @inbounds T[ndx.i, ndx.j] = dot(A, ndx.i, B, ndx.j)
         end
         T
-    end    
+    end       
 
 end
 

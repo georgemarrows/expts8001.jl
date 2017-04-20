@@ -11,3 +11,4 @@ Poking about at Matrix indexing mechanisms in Julia
 
 # Questions
 - indexes method forces a certain iteration order for mult. Does it matter?
+- should eg UpperTriangulars be made by inserting into a plain Array and then wrapping at the end?
