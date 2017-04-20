@@ -4,7 +4,7 @@ Poking about at Matrix indexing mechanisms in Julia
 # To do
 - performance tests
 - different element types
-- lower bidiagonal
+- DONE lower bidiagonal
 - sparse
 - transpose / adjoint
 - update in place vs create new array

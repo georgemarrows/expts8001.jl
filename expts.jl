@@ -1,16 +1,28 @@
 module Expt8001
+    vec(eltype::Type, len::Int64) = Vector{eltype}(len)
 
     # Return an empty matrix of the same type as `A`, with element `eltype`
     # and of size `sz`
-    empty(A::Diagonal, eltype::Type, sz) = Diagonal(Vector{Float64}(sz[1]))
-    empty(A::Bidiagonal, eltype::Type, sz) = Bidiagonal(Vector{Float64}(sz[1]), Vector{Float64}(sz[1]-1), true)
+    empty(A::Diagonal, eltype::Type, sz) = Diagonal(vec(eltype, sz[1]))
+    empty(A::Bidiagonal, eltype::Type, sz) = Bidiagonal(vec(eltype, sz[1]), vec(eltype, sz[1]-1), A.isupper)
+
+    empty(::Type{UpperTriangular}, eltype::Type, sz) = UpperTriangular(zeros(Float64, sz))
+    empty(::Type{LowerTriangular}, eltype::Type, sz) = LowerTriangular(zeros(Float64, sz))
+    empty(::Type{Tridiagonal}, eltype::Type, sz) = Tridiagonal(vec(eltype, sz[1]-1), vec(eltype, sz[1]), vec(eltype, sz[1]-1))
 
     # Return an empty matrix which is the tightest type possible to hold
     # the result of performing * on `A` and `B`
     compat(*, A::Diagonal, B::Diagonal) = empty(A, Float64, (size(A,1), size(B,2)) )
     compat(*, A::Diagonal, B::AbstractMatrix) = empty(B, Float64, (size(A,1), size(B,2)) )
     compat(*, A::AbstractMatrix, B::Diagonal) = empty(A, Float64, (size(A,1), size(B,2)) )
-    compat(*, A::Bidiagonal, B::Bidiagonal) = UpperTriangular(zeros(Float64, (size(A,1), size(A,1))))
+    compat(*, A::Bidiagonal, B::Bidiagonal) = 
+        if A.isupper && B.isupper
+            empty(UpperTriangular, Float64, (size(A,1), size(A,1)))
+        elseif !A.isupper && !B.isupper
+            empty(LowerTriangular, Float64, (size(A,1), size(A,1)))
+        else
+            empty(Tridiagonal, Float64, (size(A,1), size(A,1)) )
+        end
 
     # Indexing
     struct Index
@@ -22,20 +34,36 @@ module Expt8001
     banded(n::Int64, m::Int64, above::Int64, below::Int64) =
       ( Index(i, clamp(i+j, 1, m))  for i in 1:n, j in -above:below )
 
-    indexes(B::Bidiagonal) = banded(size(B,1), size(B,2), 0, 1)
-
+    indexes(B::Bidiagonal) = 
+        if B.isupper
+            banded(size(B,1), size(B,2), 0, 1)
+        else
+            banded(size(B,1), size(B,2), 1, 0)
+        end
     indexes(*, A::Diagonal, B::Diagonal) = (Index(i,i) for i in 1:length(A.diag))
     indexes(*, A::Diagonal, B::AbstractMatrix) = indexes(B)
     indexes(*, A::AbstractMatrix, B::Diagonal) = indexes(A)
-    indexes(*, A::Bidiagonal, B::Bidiagonal) = banded(size(A,1), size(B,2), 0, 2)
+    indexes(*, A::Bidiagonal, B::Bidiagonal) = 
+        if A.isupper && B.isupper
+            banded(size(A,1), size(B,2), 0, 2)
+        elseif !A.isupper && !B.isupper
+            banded(size(A,1), size(B,2), 2, 0)
+        else
+            banded(size(A,1), size(B,2), 1, 1)
+        end            
 
     # Dot product of the `i`th row of `A` with the `j`th column of `B`
     dot(A::Diagonal,  i::Int64, B::AbstractMatrix, j::Int64) = @inbounds return A.diag[i] * B[i, j]
-    function dot(A::Bidiagonal, i::Int64, B::AbstractMatrix, j::Int64)
-        @inbounds if i == size(A, 2)
-            return A.dv[i] * B[i, j]
+    @inline function dot(A::Bidiagonal, i::Int64, B::AbstractMatrix, j::Int64)
+        (lim, evoff, Boff) = if A.isupper
+            (size(A,2), 0, 1)
         else
-            return A.dv[i] * B[i, j]  + A.ev[i] * B[i+1, j]
+            (1, -1, -1)
+        end
+        @inbounds if i == lim
+            return A.dv[i] * B[i, j]
+        else 
+            return A.dv[i] * B[i, j]  + A.ev[i + evoff] * B[i + Boff, j]
         end
     end
 
@@ -54,7 +82,8 @@ end
 ops = [(Expt8001.A_mul_B, A_mul_B!)]
 
 mats = [n -> Diagonal(randn(n)),
-        n -> Bidiagonal(randn(n), randn(n-1), true)]
+        n -> Bidiagonal(randn(n), randn(n-1), true),
+        n -> Bidiagonal(randn(n), randn(n-1), false)]
 
 for (opnew, opold) in ops, m1f in mats, m2f in mats
     n = 10
