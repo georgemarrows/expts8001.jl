@@ -30,27 +30,33 @@ module Expt8001
         j::Int64
     end
 
+    # FIXME introduce Banded arithmetic
+    struct Banded
+        m::Int64
+        n::Int64
+        above::Int64
+        below::Int64
+    end
+    structure(B::Bidiagonal)::Banded = 
+        if B.isupper
+            Banded(size(B,1), size(B,2), 0, 1)
+        else
+            Banded(size(B,1), size(B,2), 1, 0)
+        end
+    compose(*, A::Banded, B::Banded) = Banded(A.m, B.n, A.above+B.above, A.below+B.below)
+
     # FIXME this returns some indices more than once
     banded(n::Int64, m::Int64, above::Int64, below::Int64) =
       ( Index(i, clamp(i+j, 1, m))  for i in 1:n, j in -above:below )
+    banded(B::Banded) = banded(B.n, B.m, B.above, B.below)
 
-    indexes(B::Bidiagonal) = 
-        if B.isupper
-            banded(size(B,1), size(B,2), 0, 1)
-        else
-            banded(size(B,1), size(B,2), 1, 0)
-        end
+    indexes(B::Bidiagonal) = banded(structure(B))
+
     indexes(*, A::Diagonal, B::Diagonal) = (Index(i,i) for i in 1:length(A.diag))
     indexes(*, A::Diagonal, B::AbstractMatrix) = indexes(B)
     indexes(*, A::AbstractMatrix, B::Diagonal) = indexes(A)
     indexes(*, A::Bidiagonal, B::Bidiagonal) = 
-        if A.isupper && B.isupper
-            banded(size(A,1), size(B,2), 0, 2)
-        elseif !A.isupper && !B.isupper
-            banded(size(A,1), size(B,2), 2, 0)
-        else
-            banded(size(A,1), size(B,2), 1, 1)
-        end            
+        banded(compose(*, structure(A), structure(B)))
 
     # Dot product of the `i`th row of `A` with the `j`th column of `B`
     dot(A::Diagonal,  i::Int64, B::AbstractMatrix, j::Int64) = @inbounds return A.diag[i] * B[i, j]
