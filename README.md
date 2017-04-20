@@ -1,4 +1,4 @@
-# expts8001.js
+# expts8001.jl
 Poking about at Matrix indexing mechanisms in Julia
 
 # To do
