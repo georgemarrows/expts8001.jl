@@ -5,10 +5,13 @@ module Expt8001
     # and of size `sz`
     empty(A::Diagonal, eltype::Type, sz) = Diagonal(vec(eltype, sz[1]))
     empty(A::Bidiagonal, eltype::Type, sz) = Bidiagonal(vec(eltype, sz[1]), vec(eltype, sz[1]-1), A.isupper)
+    empty(A::Tridiagonal, eltype::Type, sz) = empty(Tridiagonal, eltype, sz)
+
 
     empty(::Type{UpperTriangular}, eltype::Type, sz) = UpperTriangular(zeros(Float64, sz))
     empty(::Type{LowerTriangular}, eltype::Type, sz) = LowerTriangular(zeros(Float64, sz))
     empty(::Type{Tridiagonal}, eltype::Type, sz) = Tridiagonal(vec(eltype, sz[1]-1), vec(eltype, sz[1]), vec(eltype, sz[1]-1))
+    empty(::Type{Matrix}, eltype::Type, sz) = zeros(eltype, sz...)
 
     # Return an empty matrix which is the tightest type possible to hold
     # the result of performing * on `A` and `B`
@@ -23,6 +26,9 @@ module Expt8001
         else
             empty(Tridiagonal, Float64, (size(A,1), size(A,1)) )
         end
+    compat(*, A::Bidiagonal, B::Tridiagonal) = empty(Matrix, Float64, (size(A,1), size(A,1)) )
+    compat(*, A::Tridiagonal, B::Bidiagonal) = empty(Matrix, Float64, (size(A,1), size(A,1)) )
+    compat(*, A::Tridiagonal, B::Tridiagonal) = empty(Matrix, Float64, (size(A,1), size(A,1)) )
 
     # Indexing
     struct Index
@@ -30,50 +36,77 @@ module Expt8001
         j::Int64
     end
 
-    # FIXME introduce Banded arithmetic
+    # Represents the shape/structure/indexes of a banded matrix
     struct Banded
         m::Int64
         n::Int64
-        above::Int64
         below::Int64
+        above::Int64
     end
+
+    compose(*, A::Banded, B::Banded) = Banded(A.m, B.n, A.below+B.below, A.above+B.above)
+
     structure(B::Bidiagonal)::Banded = 
         if B.isupper
             Banded(size(B,1), size(B,2), 0, 1)
         else
             Banded(size(B,1), size(B,2), 1, 0)
         end
-    compose(*, A::Banded, B::Banded) = Banded(A.m, B.n, A.above+B.above, A.below+B.below)
+    structure(T::Tridiagonal)::Banded = Banded(size(T,1), size(T,2), 1, 1)
+    
+
 
     # FIXME this returns some indices more than once
-    banded(n::Int64, m::Int64, above::Int64, below::Int64) =
-      ( Index(i, clamp(i+j, 1, m))  for i in 1:n, j in -above:below )
-    banded(B::Banded) = banded(B.n, B.m, B.above, B.below)
+    banded(n::Int64, m::Int64, below::Int64, above::Int64) =
+      ( Index(i, clamp(i+j, 1, m))  for i in 1:n, j in -below:above )
+    banded(B::Banded) = banded(B.n, B.m, B.below, B.above)
 
     indexes(B::Bidiagonal) = banded(structure(B))
+    indexes(T::Tridiagonal) = banded(structure(T))
 
     indexes(*, A::Diagonal, B::Diagonal) = (Index(i,i) for i in 1:length(A.diag))
     indexes(*, A::Diagonal, B::AbstractMatrix) = indexes(B)
     indexes(*, A::AbstractMatrix, B::Diagonal) = indexes(A)
     indexes(*, A::Bidiagonal, B::Bidiagonal) = 
         banded(compose(*, structure(A), structure(B)))
+    indexes(*, A::Bidiagonal, B::Tridiagonal) = 
+        banded(compose(*, structure(A), structure(B)))
+    indexes(*, A::Tridiagonal, B::Bidiagonal) = 
+        banded(compose(*, structure(A), structure(B)))
+    indexes(*, A::Tridiagonal, B::Tridiagonal) = 
+        banded(compose(*, structure(A), structure(B)))
+    
 
     # Dot product of the `i`th row of `A` with the `j`th column of `B`
     dot(A::Diagonal,  i::Int64, B::AbstractMatrix, j::Int64) = @inbounds return A.diag[i] * B[i, j]
+
     @inline function dot(A::Bidiagonal, i::Int64, B::AbstractMatrix, j::Int64)
         (lim, evoff, Boff) = if A.isupper
             (size(A,2), 0, 1)
         else
             (1, -1, -1)
         end
-        @inbounds if i == lim
-            return A.dv[i] * B[i, j]
+        @inbounds return if i == lim
+            A.dv[i] * B[i, j]
         else 
-            return A.dv[i] * B[i, j]  + A.ev[i + evoff] * B[i + Boff, j]
+            A.dv[i] * B[i, j]  + A.ev[i + evoff] * B[i + Boff, j]
         end
     end
 
+    @inline function dot(A::Tridiagonal, i::Int64, B::AbstractMatrix, j::Int64)
+        # FIXME Try copying diagonals of Tridiagonal to banded form and working with them instead
+        # With zeros in place can remove branching at edges
+        # FIXME out of bounds if A is 2x2?
+        @inbounds return if i == 1
+            A.d[i] * B[i, j] + A.du[i] * B[i+1, j]
+        elseif i == size(A, 2)
+            A.d[i] * B[i, j] + A.dl[end] * B[i-1, j]
+        else 
+            A.d[i] * B[i, j] + A.dl[i-1] * B[i-1, j] + A.du[i] * B[i+1, j] 
+        end
+    end
 
+    # Actual multiplication
     function A_mul_B(A::AbstractMatrix, B::AbstractMatrix)
         T = compat(*, A, B)
 
@@ -81,7 +114,35 @@ module Expt8001
             @inbounds T[ndx.i, ndx.j] = dot(A, ndx.i, B, ndx.j)
         end
         T
-    end       
+    end  
+
+    # Performances tests to see where this approach looses time
+    function a(A::AbstractMatrix, B::AbstractMatrix)
+        # Cost of indexes()
+        sum = 0
+        for ndx in indexes(*, A, B)
+            sum += ndx.i
+        end
+        sum
+    end 
+
+    function b(A::AbstractMatrix, B::AbstractMatrix)
+        # Cost of dot()
+        sum = 0.0
+        for i in 1:100, j in 1:4
+            sum += dot(A, i, B, j)
+        end
+        sum
+    end 
+
+    function c(A::AbstractMatrix, B::AbstractMatrix)
+        # Cost of indexes() and dot()
+        sum = 0.0
+        for ndx in indexes(*, A, B)
+            @inbounds sum += dot(A, ndx.i, B, ndx.j)
+        end
+        sum
+    end 
 
 end
 
@@ -89,7 +150,9 @@ ops = [(Expt8001.A_mul_B, A_mul_B!)]
 
 mats = [n -> Diagonal(randn(n)),
         n -> Bidiagonal(randn(n), randn(n-1), true),
-        n -> Bidiagonal(randn(n), randn(n-1), false)]
+        n -> Bidiagonal(randn(n), randn(n-1), false),
+        n -> Tridiagonal(randn(n-1), randn(n), randn(n-1))
+        ]
 
 for (opnew, opold) in ops, m1f in mats, m2f in mats
     n = 10
@@ -107,6 +170,8 @@ for (opnew, opold) in ops, m1f in mats, m2f in mats
             print("NOT EQUAL TO FULL OP ", typeof(m1), " ", opnew, " ", typeof(m2), " ", "\n")
         end
     catch err
-        print(typeof(err), "\t: ", typeof(m1), " ", opnew, " ", typeof(m2), "\n")
+        println("\n>>> ", typeof(err), "\t: ", typeof(m1), " ", opnew, " ", typeof(m2))
+        showerror(STDOUT, err) #, catch_backtrace())
+        println()
     end
 end            
