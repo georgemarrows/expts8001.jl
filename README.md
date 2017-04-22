@@ -6,7 +6,9 @@ solutions to https://github.com/JuliaLang/julia/issues/8001
 - performance tests
 - different element types
 - DONE lower bidiagonal, tridiagonal
-- convert fully to using Banded to represent structure
+- DONE convert fully to using Banded to represent structure
+  But backed out for using structure to determine target matrix type
+  because that appears to defeat the inliner
 - experiment with copying/reshaping original array(s) to make indexing faster
 - sparse
 - transpose / adjoint

@@ -8,6 +8,8 @@ module Expt8001
     empty(A::Tridiagonal, eltype::Type, sz) = empty(Tridiagonal, eltype, sz)
 
 
+    empty(::Type{Diagonal}, eltype::Type, sz) = Diagonal(vec(eltype, sz[1]))
+    empty(::Type{Bidiagonal}, eltype::Type, sz, isupper::Bool) = Bidiagonal(vec(eltype, sz[1]), vec(eltype, sz[1]-1), isupper)
     empty(::Type{UpperTriangular}, eltype::Type, sz) = UpperTriangular(zeros(Float64, sz))
     empty(::Type{LowerTriangular}, eltype::Type, sz) = LowerTriangular(zeros(Float64, sz))
     empty(::Type{Tridiagonal}, eltype::Type, sz) = Tridiagonal(vec(eltype, sz[1]-1), vec(eltype, sz[1]), vec(eltype, sz[1]-1))
@@ -39,39 +41,56 @@ module Expt8001
     # Represents the shape/structure/indexes of a banded matrix
     abstract type AbstractShape end
     struct DiagonalShape <: AbstractShape
+        # An optimisation to keep iteration fast for diagonals
         m::Int64
         n::Int64
     end
-    struct BandedShape <: AbstractShape
+    struct BandedShape{B, A} <: AbstractShape
+        # B = number diagonals below main, A = number of diagonals above
+        # B, A at type level in failed attempt to simplify compat
         m::Int64
         n::Int64
-        below::Int64
-        above::Int64
     end
 
     compose(*, A::DiagonalShape, B::DiagonalShape) = A   
     compose(*, A::DiagonalShape, B::AbstractShape) = B
     compose(*, A::AbstractShape, B::DiagonalShape) = A
-    compose(*, A::BandedShape, B::BandedShape) = BandedShape(A.m, B.n, A.below+B.below, A.above+B.above)
+    # Type inference doesn't seem to be able to see through the
+    # type-level addition here, so can't inline choice of
+    # matrixfromshape()
+    compose{b1,a1,b2,a2}(*, A::BandedShape{b1,a1}, B::BandedShape{b2,a2}) =
+        BandedShape{b1+b2,a1+a2}(A.m, B.n)
 
-    structure(D::Diagonal)::DiagonalShape = DiagonalShape(size(D,1), size(D,2))
-    structure(B::Bidiagonal)::BandedShape = 
+
+    shapefrommatrix(D::Diagonal) = DiagonalShape(size(D,1), size(D,2))
+    shapefrommatrix(B::Bidiagonal)::BandedShape = 
         if B.isupper
-            BandedShape(size(B,1), size(B,2), 0, 1)
+            BandedShape{0,1}(size(B,1), size(B,2))
         else
-            BandedShape(size(B,1), size(B,2), 1, 0)
+            BandedShape{1,0}(size(B,1), size(B,2))
         end
-    structure(T::Tridiagonal)::BandedShape = BandedShape(size(T,1), size(T,2), 1, 1)
+    shapefrommatrix(T::Tridiagonal)::BandedShape = BandedShape{1,1}(size(T,1), size(T,2))
     
     iterateshape(D::DiagonalShape) = (Index(i,i) for i in 1:D.m)
-    
+
     # FIXME this returns some indices more than once
     banded(n::Int64, m::Int64, below::Int64, above::Int64) =
         ( Index(i, clamp(i+j, 1, m))  for i in 1:n, j in -below:above )
-    iterateshape(B::BandedShape) = banded(B.n, B.m, B.below, B.above)
+    iterateshape{b,a}(B::BandedShape{b,a}) = banded(B.n, B.m, b, a)
+
+
+    # matrixfromshape(D::DiagonalShape) = empty(Diagonal, Float64, (D.m, D.n))
+
+    # matrixfromshape(B::BandedShape{0,0}) = empty(Diagonal, Float64, (B.m, B.n))
+    # matrixfromshape(B::BandedShape{0,1}) = empty(Bidiagonal, Float64, (B.m, B.n), true)
+    # matrixfromshape(B::BandedShape{1,0}) = empty(Bidiagonal, Float64, (B.m, B.n), false)
+    # matrixfromshape(B::BandedShape{1,1}) = empty(Tridiagonal, Float64, (B.m, B.n))
+    # matrixfromshape{a}(B::BandedShape{0,a}) = empty(UpperTriangular, Float64, (B.m, B.n))
+    # matrixfromshape{b}(B::BandedShape{b,0}) = empty(LowerTriangular, Float64, (B.m, B.n))
+    # matrixfromshape(B::BandedShape) = empty(Matrix, Float64, (B.m, B.n))
 
     indexes(*, A::AbstractMatrix, B::AbstractMatrix) = 
-        iterateshape(compose(*, structure(A), structure(B)))
+        iterateshape(compose(*, shapefrommatrix(A), shapefrommatrix(B)))
     
 
     # Dot product of the `i`th row of `A` with the `j`th column of `B`
@@ -106,6 +125,11 @@ module Expt8001
     # Actual multiplication
     function A_mul_B(A::AbstractMatrix, B::AbstractMatrix)
         T = compat(*, A, B)
+
+        # Attempt to use shape composition to determine
+        # target matrix type seems to defeat inliner
+        # Rshape = compose(*, shapefrommatrix(A), shapefrommatrix(B))
+        # T = matrixfromshape(Rshape)
 
         for ndx in indexes(*, A, B)
             @inbounds T[ndx.i, ndx.j] = dot(A, ndx.i, B, ndx.j)
