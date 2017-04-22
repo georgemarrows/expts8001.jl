@@ -37,44 +37,41 @@ module Expt8001
     end
 
     # Represents the shape/structure/indexes of a banded matrix
-    struct Banded
+    abstract type AbstractShape end
+    struct DiagonalShape <: AbstractShape
+        m::Int64
+        n::Int64
+    end
+    struct BandedShape <: AbstractShape
         m::Int64
         n::Int64
         below::Int64
         above::Int64
     end
 
-    compose(*, A::Banded, B::Banded) = Banded(A.m, B.n, A.below+B.below, A.above+B.above)
+    compose(*, A::DiagonalShape, B::DiagonalShape) = A   
+    compose(*, A::DiagonalShape, B::AbstractShape) = B
+    compose(*, A::AbstractShape, B::DiagonalShape) = A
+    compose(*, A::BandedShape, B::BandedShape) = BandedShape(A.m, B.n, A.below+B.below, A.above+B.above)
 
-    structure(B::Bidiagonal)::Banded = 
+    structure(D::Diagonal)::DiagonalShape = DiagonalShape(size(D,1), size(D,2))
+    structure(B::Bidiagonal)::BandedShape = 
         if B.isupper
-            Banded(size(B,1), size(B,2), 0, 1)
+            BandedShape(size(B,1), size(B,2), 0, 1)
         else
-            Banded(size(B,1), size(B,2), 1, 0)
+            BandedShape(size(B,1), size(B,2), 1, 0)
         end
-    structure(T::Tridiagonal)::Banded = Banded(size(T,1), size(T,2), 1, 1)
+    structure(T::Tridiagonal)::BandedShape = BandedShape(size(T,1), size(T,2), 1, 1)
     
-
-
+    iterateshape(D::DiagonalShape) = (Index(i,i) for i in 1:D.m)
+    
     # FIXME this returns some indices more than once
     banded(n::Int64, m::Int64, below::Int64, above::Int64) =
-      ( Index(i, clamp(i+j, 1, m))  for i in 1:n, j in -below:above )
-    banded(B::Banded) = banded(B.n, B.m, B.below, B.above)
+        ( Index(i, clamp(i+j, 1, m))  for i in 1:n, j in -below:above )
+    iterateshape(B::BandedShape) = banded(B.n, B.m, B.below, B.above)
 
-    indexes(B::Bidiagonal) = banded(structure(B))
-    indexes(T::Tridiagonal) = banded(structure(T))
-
-    indexes(*, A::Diagonal, B::Diagonal) = (Index(i,i) for i in 1:length(A.diag))
-    indexes(*, A::Diagonal, B::AbstractMatrix) = indexes(B)
-    indexes(*, A::AbstractMatrix, B::Diagonal) = indexes(A)
-    indexes(*, A::Bidiagonal, B::Bidiagonal) = 
-        banded(compose(*, structure(A), structure(B)))
-    indexes(*, A::Bidiagonal, B::Tridiagonal) = 
-        banded(compose(*, structure(A), structure(B)))
-    indexes(*, A::Tridiagonal, B::Bidiagonal) = 
-        banded(compose(*, structure(A), structure(B)))
-    indexes(*, A::Tridiagonal, B::Tridiagonal) = 
-        banded(compose(*, structure(A), structure(B)))
+    indexes(*, A::AbstractMatrix, B::AbstractMatrix) = 
+        iterateshape(compose(*, structure(A), structure(B)))
     
 
     # Dot product of the `i`th row of `A` with the `j`th column of `B`
